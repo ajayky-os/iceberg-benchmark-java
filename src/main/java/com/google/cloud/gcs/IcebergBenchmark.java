@@ -250,7 +250,9 @@ public class IcebergBenchmark implements Runnable {
         .repartition(1)
         .write()
         .option("header", "true")
-        .option("delimiter", "|")
+        .option("delimiter", ",")
+        .option("quoteAll", "true")
+        .option("escape", "\"")
         .mode(SaveMode.Overwrite)
         .csv(finalOutputPath);
 

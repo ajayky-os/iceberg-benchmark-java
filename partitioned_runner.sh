@@ -5,11 +5,11 @@ export TPCH_QUERIES_FOLDER=/home/ajayky_google_com/java-benchmark-iceberg/querie
 export TPCDS_QUERIES_FOLDER=/home/ajayky_google_com/java-benchmark-iceberg/queries/tpcds
 export JAVA_BENCHMARK_DIR=/home/ajayky_google_com/java-benchmark-iceberg
 export SPARK_MASTER_URL=spark://10.182.0.93:7077
-export RESULT_OUTPUT_GCS_PATH=gs://gcs-hyd-iceberg-benchmark-results/flat
+export RESULT_OUTPUT_GCS_PATH=gs://gcs-hyd-iceberg-benchmark-results/partitioned
 export SPARK_HOME=/opt/spark
 export ICEBERG_SPARK_JAR="gs://gcs-hyd-iceberg-benchmark-warehouse/jars/iceberg-spark-runtime-4.0_2.13-1.11.0-SNAPSHOT.jar,gs://gcs-hyd-iceberg-benchmark-warehouse/jars/iceberg-gcp-bundle-1.11.0-SNAPSHOT.jar"
-export CATALOG_NAME="gcs_prod"
-export CATALOG_WAREHOUSE="gs://gcs-hyd-iceberg-benchmark-warehouse/warehouse"
+export CATALOG_NAME="gcs_prod_partitioned"
+export CATALOG_WAREHOUSE="gs://gcs-hyd-iceberg-benchmark-warehouse/partitioned_warehouse"
 
 # Compile benchmark runner
 cd $JAVA_BENCHMARK_DIR
