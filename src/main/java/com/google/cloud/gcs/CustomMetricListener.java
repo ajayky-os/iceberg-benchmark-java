@@ -54,12 +54,12 @@ public class CustomMetricListener extends SparkListener {
 
   @Override
   public void onStageCompleted(SparkListenerStageCompleted stageCompleted) {
+
     StageInfo info = stageCompleted.stageInfo();
     if (info == null) {
       return;
     }
-
-    System.out.println("--- Listener: Stage Completed: " + info.stageId() + " ---");
+    System.out.println("--- Listener: Stage Completed: id=" + info.stageId() + " ---");
 
     TaskMetrics taskMetrics = info.taskMetrics();
     if (taskMetrics != null) {
@@ -100,6 +100,7 @@ public class CustomMetricListener extends SparkListener {
         if (!metricName.startsWith("accumulable_custom_scan_time")) {
           continue;
         }
+        System.out.println("    --- accumulable_custom_scan_time=" + value.toString());
         addMetric(metricName, value.toString());
         if (taskMetrics != null) {
           totalBatchNodeExecutorRunTime.add(taskMetrics.executorRunTime());

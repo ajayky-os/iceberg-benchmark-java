@@ -11,10 +11,14 @@ export ICEBERG_SPARK_JAR="gs://gcs-hyd-iceberg-benchmark-warehouse/jars/iceberg-
 export CATALOG_NAME="gcs_prod"
 export CATALOG_WAREHOUSE="gs://gcs-hyd-iceberg-benchmark-warehouse/warehouse"
 
+# Set unique benchmark run id
+export BENCHMARK_RUN_ID=$(date +%Y%m%d%H%M%S)-$(uuidgen)
+echo "BENCHMARK_RUN_ID: ${BENCHMARK_RUN_ID}"
+
 # Compile benchmark runner
 cd $JAVA_BENCHMARK_DIR
 mvn clean package
-export BENCHMARK_JAR_PATH="$(find $JAVA_BENCHMARK_DIR/target -name 'iceberg-benchmark-java-*-jar-with-dependencies.jar')"
+export BENCHMARK_JAR_PATH="$(find $JAVA_BENCHMARK_DIR/target -name 'java-benchmarking-iceberg-*-jar-with-dependencies.jar')"
 if [ -z "$BENCHMARK_JAR_PATH" ]; then
     echo "Error: Benchmark JAR not found!"
     exit 1

@@ -64,7 +64,12 @@ public class IcebergBenchmark implements Runnable {
       description = "GCS path to write results CSV files (e.g., gs://bucket/path)")
   private String outputGcsPath;
 
-  private final String runId = UUID.randomUUID().toString();
+  @Option(
+      names = {"--run-id"},
+      required = true,
+      description = "Unique ID for this benchmark run")
+  private String runId;
+
   private final List<Map<String, Object>> resultsBuffer = new ArrayList<>();
   private SparkSession spark;
   private com.google.cloud.gcs.CustomMetricListener listener;
@@ -178,6 +183,15 @@ public class IcebergBenchmark implements Runnable {
         long endTime = System.nanoTime();
         double durationSec = (endTime - startTime) / 1e9;
 
+        try {
+          // Wait for a short period to allow Spark listener events to be processed.
+          System.out.print("Waiting for 5 sec to ensure all events are processed...");
+          Thread.sleep(5000);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          System.err.println("Interrupted while waiting for listener events: " + e.getMessage());
+        }
+
         Map<String, String> metrics = listener.getMetrics();
         String metricsJson = "{}";
         try {
@@ -253,7 +267,7 @@ public class IcebergBenchmark implements Runnable {
         .option("delimiter", ",")
         .option("quoteAll", "true")
         .option("escape", "\"")
-        .mode(SaveMode.Overwrite)
+        .mode(SaveMode.Append)
         .csv(finalOutputPath);
 
     System.out.println("  -> Flushed " + resultsBuffer.size() + " results to " + finalOutputPath);

@@ -32,4 +32,5 @@ $SPARK_HOME/bin/spark-submit \
   --tpcds-data-db $TPCDS_DATA_DB \
   --tpch-data-db $TPCH_DATA_DB \
   --catalog-name $CATALOG_NAME \
+  --run-id ${BENCHMARK_RUN_ID} \
   --output-gcs-path $RESULT_OUTPUT_GCS_PATH
