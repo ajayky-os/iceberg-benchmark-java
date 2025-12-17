@@ -101,7 +101,7 @@ public class CustomMetricListener extends SparkListener {
           continue;
         }
         System.out.println("    --- accumulable_custom_scan_time=" + value.toString());
-        addMetric(metricName, value.toString());
+        addMetric(metricName, Long.parseLong(value.toString()));
         if (taskMetrics != null) {
           totalBatchNodeExecutorRunTime.add(taskMetrics.executorRunTime());
           totalBatchNodeExecutorCpuTime.add(taskMetrics.executorCpuTime());
@@ -117,7 +117,16 @@ public class CustomMetricListener extends SparkListener {
     }
   }
 
+  private void addMetric(String key, long value) {
+    if (!currentQueryMetrics.containsKey(key)) {
+      currentQueryMetrics.put(key, String.valueOf(value));
+      return;
+    }
+    long currentValue = Long.parseLong(currentQueryMetrics.get(key));
+    currentQueryMetrics.put(key, String.valueOf(currentValue + value));
+  }
+
   private void addMetric(String key, String value) {
-    currentQueryMetrics.put(key, value);
+      currentQueryMetrics.put(key, value);
   }
 }

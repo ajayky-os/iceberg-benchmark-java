@@ -25,19 +25,19 @@ if [ -z "$BENCHMARK_JAR_PATH" ]; then
 fi
 
 # Analytics Core enabled with JSON client
-TPCDS_DATA_DB="tpcds_sf1" TPCH_DATA_DB="tpch_sf1" ./spark_submit_with_analytics_core.sh
-TPCDS_DATA_DB="tpcds_sf10" TPCH_DATA_DB="tpch_sf10" ./spark_submit_with_analytics_core.sh
-TPCDS_DATA_DB="tpcds_sf100" TPCH_DATA_DB="tpch_sf100" ./spark_submit_with_analytics_core.sh
+#TPCDS_DATA_DB="tpcds_sf1" TPCH_DATA_DB="tpch_sf1" ./spark_submit_with_analytics_core.sh
+#TPCDS_DATA_DB="tpcds_sf10" TPCH_DATA_DB="tpch_sf10" ./spark_submit_with_analytics_core.sh
+#TPCDS_DATA_DB="tpcds_sf100" TPCH_DATA_DB="tpch_sf100" ./spark_submit_with_analytics_core.sh
 TPCDS_DATA_DB="tpcds_sf1000" TPCH_DATA_DB="tpch_sf1000" ./spark_submit_with_analytics_core.sh
 
 # Analytics core disabled
-TPCDS_DATA_DB="tpcds_sf1" TPCH_DATA_DB="tpch_sf1" ./spark_submit_without_analytics_core.sh
-TPCDS_DATA_DB="tpcds_sf10" TPCH_DATA_DB="tpch_sf10" ./spark_submit_without_analytics_core.sh
-TPCDS_DATA_DB="tpcds_sf100" TPCH_DATA_DB="tpch_sf100" ./spark_submit_without_analytics_core.sh
+#TPCDS_DATA_DB="tpcds_sf1" TPCH_DATA_DB="tpch_sf1" ./spark_submit_without_analytics_core.sh
+#TPCDS_DATA_DB="tpcds_sf10" TPCH_DATA_DB="tpch_sf10" ./spark_submit_without_analytics_core.sh
+#TPCDS_DATA_DB="tpcds_sf100" TPCH_DATA_DB="tpch_sf100" ./spark_submit_without_analytics_core.sh
 TPCDS_DATA_DB="tpcds_sf1000" TPCH_DATA_DB="tpch_sf1000" ./spark_submit_without_analytics_core.sh
 
 # Analytics core enabled with GRPC client
-TPCDS_DATA_DB="tpcds_sf1" TPCH_DATA_DB="tpch_sf1" ./spark_submit_grpc_enabled.sh
-TPCDS_DATA_DB="tpcds_sf10" TPCH_DATA_DB="tpch_sf10" ./spark_submit_grpc_enabled.sh
-TPCDS_DATA_DB="tpcds_sf100" TPCH_DATA_DB="tpch_sf100" ./spark_submit_grpc_enabled.sh
-TPCDS_DATA_DB="tpcds_sf1000" TPCH_DATA_DB="tpch_sf1000" ./spark_submit_grpc_enabled.sh
+#TPCDS_DATA_DB="tpcds_sf1" TPCH_DATA_DB="tpch_sf1" ./spark_submit_grpc_enabled.sh
+#TPCDS_DATA_DB="tpcds_sf10" TPCH_DATA_DB="tpch_sf10" ./spark_submit_grpc_enabled.sh
+#TPCDS_DATA_DB="tpcds_sf100" TPCH_DATA_DB="tpch_sf100" ./spark_submit_grpc_enabled.sh
+#TPCDS_DATA_DB="tpcds_sf1000" TPCH_DATA_DB="tpch_sf1000" ./spark_submit_grpc_enabled.sh

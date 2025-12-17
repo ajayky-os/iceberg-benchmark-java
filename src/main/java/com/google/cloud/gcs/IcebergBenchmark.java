@@ -2,6 +2,7 @@ package com.google.cloud.gcs;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -147,7 +148,7 @@ public class IcebergBenchmark implements Runnable {
       System.out.println("Found " + sqlFiles.size() + " queries for " + benchmarkName);
 
       boolean analyticsCoreEnabled =
-          Boolean.parseBoolean(
+          java.lang.Boolean.parseBoolean(
               spark
                   .conf()
                   .get(
@@ -160,6 +161,14 @@ public class IcebergBenchmark implements Runnable {
                   .get("spark.sql.catalog." + catalogName + ".gcs.client.type", "HTTP_CLIENT"))) {
         clientType = "GRPC";
       }
+
+      String smallFileCacheThreshold =
+          spark
+              .conf()
+              .get(
+                  "spark.sql.catalog."
+                      + catalogName
+                      + ".gcs.analytics-core.small-file.cache.threshold-bytes", "default");
 
       for (Path sqlFile : sqlFiles) {
         String queryName = sqlFile.getFileName().toString();
@@ -185,14 +194,16 @@ public class IcebergBenchmark implements Runnable {
 
         try {
           // Wait for a short period to allow Spark listener events to be processed.
-          System.out.print("Waiting for 5 sec to ensure all events are processed...");
-          Thread.sleep(5000);
+          System.out.print("Waiting for 10 sec to ensure all events are processed...");
+          Thread.sleep(10000);
+          System.out.println(" Done.");
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           System.err.println("Interrupted while waiting for listener events: " + e.getMessage());
         }
 
         Map<String, String> metrics = listener.getMetrics();
+        metrics.put("gcs.analytics-core.small-file.cache.threshold-bytes", smallFileCacheThreshold);
         String metricsJson = "{}";
         try {
           metricsJson = mapper.writeValueAsString(metrics);
