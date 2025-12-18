@@ -1,15 +1,20 @@
 package com.google.cloud.gcs;
 
+import static java.lang.Boolean.*;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
+import java.util.Deque;
 import java.util.stream.Collectors;
+import org.apache.spark.executor.TaskMetrics;
+import org.apache.spark.scheduler.AccumulableInfo;
+import org.apache.spark.scheduler.StageInfo;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -21,6 +26,7 @@ import org.apache.spark.sql.types.StructType;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
+import scala.jdk.javaapi.CollectionConverters;
 
 @Command(
     name = "IcebergBenchmark",
@@ -75,6 +81,8 @@ public class IcebergBenchmark implements Runnable {
   private SparkSession spark;
   private com.google.cloud.gcs.CustomMetricListener listener;
   private ObjectMapper mapper = new ObjectMapper();
+  private String clientType;
+  private boolean analyticsCoreEnabled;
 
   public static void main(String[] args) {
     int exitCode = new CommandLine(new IcebergBenchmark()).execute(args);
@@ -95,6 +103,19 @@ public class IcebergBenchmark implements Runnable {
     listener = new CustomMetricListener();
     spark.sparkContext().addSparkListener(listener);
     System.out.println("--- CustomMetricListener Registered ---");
+
+    analyticsCoreEnabled =
+        parseBoolean(
+            spark
+                .conf()
+                .get("spark.sql.catalog." + catalogName + ".gcs.analytics-core.enabled", "false"));
+    clientType = "HTTP";
+    if (spark
+        .conf()
+        .get("spark.sql.catalog." + catalogName + ".gcs.client.type", "HTTP_CLIENT")
+        .equals("GRPC_CLIENT")) {
+      clientType = "GRPC";
+    }
 
     try {
       runBenchmark("TPC-DS", tpcdsDir, tpcdsDataDb, catalogName);
@@ -147,114 +168,210 @@ public class IcebergBenchmark implements Runnable {
 
       System.out.println("Found " + sqlFiles.size() + " queries for " + benchmarkName);
 
-      boolean analyticsCoreEnabled =
-          java.lang.Boolean.parseBoolean(
-              spark
-                  .conf()
-                  .get(
-                      "spark.sql.catalog." + catalogName + ".gcs.analytics-core.enabled", "false"));
-      String clientType = "HTTP";
-      if ("GRPC_CLIENT"
-          .equals(
-              spark
-                  .conf()
-                  .get("spark.sql.catalog." + catalogName + ".gcs.client.type", "HTTP_CLIENT"))) {
-        clientType = "GRPC";
-      }
-
-      String smallFileCacheThreshold =
-          spark
-              .conf()
-              .get(
-                  "spark.sql.catalog."
-                      + catalogName
-                      + ".gcs.analytics-core.small-file.cache.threshold-bytes", "default");
-
       for (Path sqlFile : sqlFiles) {
         String queryName = sqlFile.getFileName().toString();
-        System.out.println("Running " + benchmarkName + " query: " + queryName);
+        System.out.println("Running " + dbName + " query: " + queryName);
         String querySql = new String(Files.readAllBytes(sqlFile));
         querySql = querySql.replace("${database}", catalogName).replace("${schema}", dbName);
 
         String status = "SUCCESS";
         String errorMessage = null;
-        long startTime = System.nanoTime();
-
-        listener.resetMetrics(); // Reset metrics for the current query
+        long queryStartTimeMs = System.currentTimeMillis();
 
         try {
+          listener.reset();
           spark.sql(querySql).write().format("noop").mode(SaveMode.Overwrite).save();
         } catch (Exception e) {
           status = "FAILED";
           errorMessage = e.toString().substring(0, Math.min(e.toString().length(), 2000));
           System.out.println("  -> FAILED: " + queryName + ". Error: " + errorMessage);
         }
-        long endTime = System.nanoTime();
-        double durationSec = (endTime - startTime) / 1e9;
-
-        try {
-          // Wait for a short period to allow Spark listener events to be processed.
-          System.out.print("Waiting for 10 sec to ensure all events are processed...");
-          Thread.sleep(10000);
-          System.out.println(" Done.");
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          System.err.println("Interrupted while waiting for listener events: " + e.getMessage());
-        }
-
-        Map<String, String> metrics = listener.getMetrics();
-        metrics.put("gcs.analytics-core.small-file.cache.threshold-bytes", smallFileCacheThreshold);
-        String metricsJson = "{}";
-        try {
-          metricsJson = mapper.writeValueAsString(metrics);
-        } catch (Exception e) {
-          System.err.println("Error serializing metrics to JSON: " + e.getMessage());
-        }
+        long queryEndTimeMs = System.currentTimeMillis();
+        double durationSec = (queryEndTimeMs - queryStartTimeMs) / 1000.0;
+        long executionId = listener.waitForExecutionId();
 
         Map<String, Object> result = new HashMap<>();
         result.put("run_id", runId);
         result.put("schema_size", dbName);
         result.put("benchmark_type", benchmarkName);
         result.put("query_name", queryName);
+        result.put("execution_id", executionId);
+        result.put("query_start_time", queryStartTimeMs);
+        result.put("query_end_time", queryEndTimeMs);
         result.put("execution_time_sec", durationSec);
         result.put("status", status);
         result.put("error_message", errorMessage);
-        result.put("metrics_json", metricsJson);
         result.put("analytics_core_enabled", analyticsCoreEnabled);
         result.put("client_type", clientType);
-        try {
-          result.put(
-              "total_batch_scan_time_ms", Long.parseLong(metrics.get("total_batch_scan_time_ms")));
-        } catch (NumberFormatException e) {
-          System.err.println("Error parsing total_batch_scan_time_ms: " + e.getMessage());
-          result.put("total_batch_scan_time_ms", null);
-        }
         result.put("timestamp", Timestamp.from(Instant.now()));
         resultsBuffer.add(result);
-        System.out.println("  -> Buffered result for " + queryName + ": " + status);
+        System.out.println(
+            "-> Buffered result for query="
+                + queryName
+                + ", status="
+                + status
+                + ", execution_id="
+                + executionId);
       }
-    } catch (IOException e) {
+      System.out.println("Waiting for 10 sec to synchronize SparkListener events");
+      Thread.sleep(10000);
+      processStageInfoFromDeque();
+    } catch (IOException | InterruptedException e) {
       System.err.println("Error listing SQL files: " + e.getMessage());
+    }
+  }
+
+  private void processStageInfoFromDeque() {
+    Deque<StageInfo> stageInfoDeque = CustomMetricListener.getStageInfoDeque();
+    System.out.println(
+        "Processing "
+            + stageInfoDeque.size()
+            + " completed stages from Deque for current queries...");
+
+    while (!stageInfoDeque.isEmpty()) {
+      StageInfo stageInfo = stageInfoDeque.poll();
+      Long executionId = listener.getStageToExecutionId().get(stageInfo.stageId());
+      if (executionId == null) {
+        System.out.println(
+            "  -> Warning: Stage ID " + stageInfo.stageId() + " has no execution_id.");
+        continue;
+      }
+      Optional<Map<String, Object>> matchingResultOpt =
+          resultsBuffer.stream()
+              .filter(
+                  result -> {
+                    long queryExecutionId = ((Long) result.get("execution_id")).longValue();
+                    return queryExecutionId == executionId;
+                  })
+              .findFirst();
+      matchingResultOpt.ifPresentOrElse(
+          matchingResult -> {
+            @SuppressWarnings("unchecked")
+            List<StageInfo> stages =
+                (List<StageInfo>) matchingResult.computeIfAbsent("stages", k -> new ArrayList<>());
+            stages.add(stageInfo);
+          },
+          () -> {
+            System.out.println(
+                "  -> Warning: Stage ID "
+                    + stageInfo.stageId()
+                    + " (execution_id "
+                    + executionId
+                    + ") not found in any query result buffer..");
+          });
+    }
+
+    for (Map<String, Object> result : resultsBuffer) {
+      updateQueryMetricFromStageInfo(result);
+    }
+  }
+
+  void updateQueryMetricFromStageInfo(Map<String, Object> queryMetric) {
+    if (!queryMetric.containsKey("stages")) {
+      return;
+    }
+    @SuppressWarnings("unchecked")
+    List<StageInfo> stages = (List<StageInfo>) queryMetric.get("stages");
+    if (stages.isEmpty()) {
+      return;
+    }
+    Map<String, String> metricJson = new HashMap<>();
+    long total_batch_scan_time_ms = 0;
+    long total_executor_run_time_ms = 0;
+    long total_executor_cpu_time_ms = 0;
+    long total_executor_gc_time_ms = 0;
+    long total_batch_scan_node_executor_run_time_ms = 0;
+    long total_batch_scan_node_cpu_time_ms = 0;
+    long total_batch_scan_node_gc_time_ms = 0;
+    for (StageInfo stageInfo : stages) {
+      TaskMetrics taskMetrics = stageInfo.taskMetrics();
+      if (taskMetrics != null) {
+        total_executor_run_time_ms += taskMetrics.executorRunTime();
+        total_executor_cpu_time_ms += taskMetrics.executorCpuTime();
+        total_executor_gc_time_ms += taskMetrics.jvmGCTime();
+      }
+      if (stageInfo.accumulables() == null || stageInfo.accumulables().isEmpty()) {
+        continue;
+      }
+      Map<Object, AccumulableInfo> accumulables =
+          CollectionConverters.asJava(stageInfo.accumulables());
+      for (AccumulableInfo accumInfo : accumulables.values()) {
+        if (accumInfo.name().isDefined() && accumInfo.value().isDefined()) {
+          String name = accumInfo.name().get();
+          Object value = accumInfo.value().get();
+          String metricName = "accumulable_" + name.replaceAll("[^a-zA-Z0-9_]", "_");
+          metricName += "_" + stageInfo.stageId();
+
+          // Capture custom scan time
+          if (!metricName.startsWith("accumulable_custom_scan_time")) {
+            continue;
+          }
+          total_batch_scan_time_ms += Long.parseLong(value.toString());
+          if (metricJson.containsKey(metricName)) {
+            metricJson.put(
+                metricName,
+                String.valueOf(
+                    Long.parseLong(metricJson.get(metricName)) + Long.parseLong(value.toString())));
+          } else {
+            metricJson.put(metricName, value.toString());
+          }
+          if (taskMetrics != null) {
+            total_batch_scan_node_executor_run_time_ms += taskMetrics.executorRunTime();
+            total_batch_scan_node_cpu_time_ms += taskMetrics.executorCpuTime();
+            total_batch_scan_node_gc_time_ms += taskMetrics.jvmGCTime();
+          }
+        }
+      }
+      metricJson.put("total_executor_run_time_ms", String.valueOf(total_executor_run_time_ms));
+      metricJson.put("total_executor_cpu_time_ms", String.valueOf(total_executor_cpu_time_ms));
+      metricJson.put("total_executor_gc_time_ms", String.valueOf(total_executor_gc_time_ms));
+      metricJson.put(
+          "total_batch_scan_node_executor_run_time_ms",
+          String.valueOf(total_batch_scan_node_executor_run_time_ms));
+      metricJson.put(
+          "total_batch_scan_node_cpu_time_ms", String.valueOf(total_batch_scan_node_cpu_time_ms));
+      metricJson.put(
+          "total_batch_scan_node_gc_time_ms", String.valueOf(total_batch_scan_node_gc_time_ms));
+
+      metricJson.put(
+          "gcs.analytics-core.small-file.cache.threshold-bytes",
+          spark
+              .conf()
+              .get(
+                  "spark.sql.catalog."
+                      + catalogName
+                      + ".gcs.analytics-core.small-file.cache.threshold-bytes",
+                  "default"));
+      metricJson.put("execution_id", String.valueOf(queryMetric.get("execution_id")));
+      String json = "{}";
+      try {
+        json = mapper.writeValueAsString(metricJson);
+      } catch (Exception e) {
+        System.err.println("Error serializing metrics to JSON: " + e.getMessage());
+      }
+      queryMetric.put("metric_json", json);
+      queryMetric.put("total_batch_scan_time_ms", total_batch_scan_time_ms);
     }
   }
 
   private List<Row> createRowsFromBuffer() {
     return resultsBuffer.stream()
         .map(
-            map ->
-                RowFactory.create(
-                    map.get("run_id"),
-                    map.get("schema_size"),
-                    map.get("benchmark_type"),
-                    map.get("query_name"),
-                    map.get("execution_time_sec"),
-                    map.get("status"),
-                    map.get("error_message"),
-                    map.get("metrics_json"),
-                    map.get("analytics_core_enabled"),
-                    map.get("client_type"),
-                    map.get("total_batch_scan_time_ms"),
-                    map.get("timestamp")))
+            map -> {
+              return RowFactory.create(
+                  map.get("run_id"),
+                  map.get("schema_size"),
+                  map.get("benchmark_type"),
+                  map.get("query_name"),
+                  map.get("execution_time_sec"),
+                  map.get("status"),
+                  map.get("error_message"),
+                  map.get("metric_json"),
+                  map.get("analytics_core_enabled"),
+                  map.get("client_type"),
+                  map.get("total_batch_scan_time_ms"),
+                  map.get("timestamp"));
+            })
         .collect(Collectors.toList());
   }
 
