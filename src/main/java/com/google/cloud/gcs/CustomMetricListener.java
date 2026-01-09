@@ -10,11 +10,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.apache.spark.scheduler.SparkListener;
 import org.apache.spark.scheduler.SparkListenerJobStart;
 import org.apache.spark.scheduler.SparkListenerStageCompleted;
+import org.apache.spark.scheduler.SparkListenerTaskEnd;
 import org.apache.spark.scheduler.StageInfo;
 
 public class CustomMetricListener extends SparkListener {
 
   private static final Deque<StageInfo> stageInfoDeque = new LinkedBlockingDeque<>();
+  private static final Deque<SparkListenerTaskEnd> taskEndDeque = new LinkedBlockingDeque<>();
   private static final ConcurrentHashMap<Integer, Long> stageToExecutionId =
       new ConcurrentHashMap<>();
   private CountDownLatch latch = new CountDownLatch(1);
@@ -22,6 +24,10 @@ public class CustomMetricListener extends SparkListener {
 
   public static Deque<StageInfo> getStageInfoDeque() {
     return stageInfoDeque;
+  }
+
+  public static Deque<SparkListenerTaskEnd> getTaskEndDeque() {
+    return taskEndDeque;
   }
 
   public static ConcurrentHashMap<Integer, Long> getStageToExecutionId() {
@@ -63,6 +69,14 @@ public class CustomMetricListener extends SparkListener {
             + stageToExecutionId.get(info.stageId())
             + " ---");
     stageInfoDeque.offer(info);
+  }
+
+  @Override
+  public void onTaskEnd(SparkListenerTaskEnd taskEnd) {
+    if (taskEnd == null || taskEnd.taskInfo() == null) {
+      return;
+    }
+    taskEndDeque.offer(taskEnd);
   }
 
   public long waitForExecutionId() {
