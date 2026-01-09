@@ -10,11 +10,12 @@ import java.nio.file.Paths;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.*;
-import java.util.Deque;
 import java.util.stream.Collectors;
 import org.apache.spark.executor.TaskMetrics;
 import org.apache.spark.scheduler.AccumulableInfo;
+import org.apache.spark.scheduler.SparkListenerTaskEnd;
 import org.apache.spark.scheduler.StageInfo;
+import org.apache.spark.scheduler.TaskInfo;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -142,7 +143,9 @@ public class IcebergBenchmark implements Runnable {
           DataTypes.createStructField("analytics_core_enabled", DataTypes.BooleanType, true),
           DataTypes.createStructField("client_type", DataTypes.StringType, true),
           DataTypes.createStructField("total_batch_scan_time_ms", DataTypes.LongType, true),
-          DataTypes.createStructField("timestamp", DataTypes.TimestampType, false)
+          DataTypes.createStructField("timestamp", DataTypes.TimestampType, false),
+          DataTypes.createStructField("task_metrics_json", DataTypes.StringType, true),
+          DataTypes.createStructField("stage_metrics_json", DataTypes.StringType, true)
         });
   }
 
@@ -216,6 +219,7 @@ public class IcebergBenchmark implements Runnable {
       System.out.println("Waiting for 10 sec to synchronize SparkListener events");
       Thread.sleep(10000);
       processStageInfoFromDeque();
+      processTaskMetricsFromDeque();
     } catch (IOException | InterruptedException e) {
       System.err.println("Error listing SQL files: " + e.getMessage());
     }
@@ -268,14 +272,17 @@ public class IcebergBenchmark implements Runnable {
 
   void updateQueryMetricFromStageInfo(Map<String, Object> queryMetric) {
     if (!queryMetric.containsKey("stages")) {
+      queryMetric.put("stage_metrics_json", "[]");
       return;
     }
     @SuppressWarnings("unchecked")
     List<StageInfo> stages = (List<StageInfo>) queryMetric.get("stages");
     if (stages.isEmpty()) {
+      queryMetric.put("stage_metrics_json", "[]");
       return;
     }
-    Map<String, String> metricJson = new HashMap<>();
+    Map<String, Object> metricJson = new HashMap<>();
+    List<Map<String, Object>> stageMetrics = new ArrayList<>();
     long total_batch_scan_time_ms = 0;
     long total_executor_run_time_ms = 0;
     long total_executor_cpu_time_ms = 0;
@@ -284,17 +291,38 @@ public class IcebergBenchmark implements Runnable {
     long total_batch_scan_node_cpu_time_ms = 0;
     long total_batch_scan_node_gc_time_ms = 0;
     for (StageInfo stageInfo : stages) {
-      TaskMetrics taskMetrics = stageInfo.taskMetrics();
-      if (taskMetrics != null) {
-        total_executor_run_time_ms += taskMetrics.executorRunTime();
-        total_executor_cpu_time_ms += taskMetrics.executorCpuTime();
-        total_executor_gc_time_ms += taskMetrics.jvmGCTime();
+      Long submissionTime = null;
+      if (stageInfo.submissionTime().isDefined()) {
+        submissionTime = (Long) stageInfo.submissionTime().get();
       }
+      Long completionTime = null;
+      if (stageInfo.completionTime().isDefined()) {
+        completionTime = (Long) stageInfo.completionTime().get();
+      }
+      TaskMetrics taskMetrics = stageInfo.taskMetrics();
+      long executorRunTime = 0;
+      long executorCpuTime = 0;
+      long jvmGCTime = 0;
+      if (taskMetrics != null) {
+        executorRunTime = taskMetrics.executorRunTime();
+        executorCpuTime = taskMetrics.executorCpuTime();
+        jvmGCTime = taskMetrics.jvmGCTime();
+        total_executor_run_time_ms += executorRunTime;
+        total_executor_cpu_time_ms += executorCpuTime;
+        total_executor_gc_time_ms += jvmGCTime;
+      }
+      Map<String, Object> stageMetric = new HashMap<>();
+      stageMetric.put("stageId", stageInfo.stageId());
+      stageMetric.put("submissionTime", submissionTime);
+      stageMetric.put("completionTime", completionTime);
+      stageMetric.put("custom_scan_time", 0);
       if (stageInfo.accumulables() == null || stageInfo.accumulables().isEmpty()) {
+        stageMetrics.add(stageMetric);
         continue;
       }
       Map<Object, AccumulableInfo> accumulables =
           CollectionConverters.asJava(stageInfo.accumulables());
+      long beforeScanTime = total_batch_scan_time_ms;
       for (AccumulableInfo accumInfo : accumulables.values()) {
         if (accumInfo.name().isDefined() && accumInfo.value().isDefined()) {
           String name = accumInfo.name().get();
@@ -311,7 +339,7 @@ public class IcebergBenchmark implements Runnable {
             metricJson.put(
                 metricName,
                 String.valueOf(
-                    Long.parseLong(metricJson.get(metricName)) + Long.parseLong(value.toString())));
+                    Long.parseLong(metricJson.get(metricName).toString()) + Long.parseLong(value.toString())));
           } else {
             metricJson.put(metricName, value.toString());
           }
@@ -322,36 +350,49 @@ public class IcebergBenchmark implements Runnable {
           }
         }
       }
-      metricJson.put("total_executor_run_time_ms", String.valueOf(total_executor_run_time_ms));
-      metricJson.put("total_executor_cpu_time_ms", String.valueOf(total_executor_cpu_time_ms));
-      metricJson.put("total_executor_gc_time_ms", String.valueOf(total_executor_gc_time_ms));
-      metricJson.put(
-          "total_batch_scan_node_executor_run_time_ms",
-          String.valueOf(total_batch_scan_node_executor_run_time_ms));
-      metricJson.put(
-          "total_batch_scan_node_cpu_time_ms", String.valueOf(total_batch_scan_node_cpu_time_ms));
-      metricJson.put(
-          "total_batch_scan_node_gc_time_ms", String.valueOf(total_batch_scan_node_gc_time_ms));
-
-      metricJson.put(
-          "gcs.analytics-core.small-file.cache.threshold-bytes",
-          spark
-              .conf()
-              .get(
-                  "spark.sql.catalog."
-                      + catalogName
-                      + ".gcs.analytics-core.small-file.cache.threshold-bytes",
-                  "default"));
-      metricJson.put("execution_id", String.valueOf(queryMetric.get("execution_id")));
-      String json = "{}";
-      try {
-        json = mapper.writeValueAsString(metricJson);
-      } catch (Exception e) {
-        System.err.println("Error serializing metrics to JSON: " + e.getMessage());
-      }
-      queryMetric.put("metric_json", json);
-      queryMetric.put("total_batch_scan_time_ms", total_batch_scan_time_ms);
+      stageMetric.put("accumulable_custom_scan_time", total_batch_scan_time_ms - beforeScanTime);
+      stageMetrics.add(stageMetric);
     }
+
+    metricJson.put("total_executor_run_time_ms", String.valueOf(total_executor_run_time_ms));
+    metricJson.put("total_executor_cpu_time_ms", String.valueOf(total_executor_cpu_time_ms));
+    metricJson.put("total_executor_gc_time_ms", String.valueOf(total_executor_gc_time_ms));
+    metricJson.put(
+        "total_batch_scan_node_executor_run_time_ms",
+        String.valueOf(total_batch_scan_node_executor_run_time_ms));
+    metricJson.put(
+        "total_batch_scan_node_cpu_time_ms", String.valueOf(total_batch_scan_node_cpu_time_ms));
+    metricJson.put(
+        "total_batch_scan_node_gc_time_ms", String.valueOf(total_batch_scan_node_gc_time_ms));
+
+    metricJson.put(
+        "gcs.analytics-core.small-file.cache.threshold-bytes",
+        spark
+            .conf()
+            .get(
+                "spark.sql.catalog."
+                    + catalogName
+                    + ".gcs.analytics-core.small-file.cache.threshold-bytes",
+                "default"));
+    metricJson.put("execution_id", String.valueOf(queryMetric.get("execution_id")));
+
+    String json = "{}";
+    try {
+      json = mapper.writeValueAsString(metricJson);
+    } catch (Exception e) {
+      System.err.println("Error serializing metrics to JSON: " + e.getMessage());
+    }
+    queryMetric.put("metric_json", json);
+
+    String stageMetricsJson = "[]";
+    try {
+      stageMetricsJson = mapper.writeValueAsString(stageMetrics);
+    } catch (Exception e) {
+      System.err.println("Error serializing stage metrics to JSON: " + e.getMessage());
+    }
+    queryMetric.put("stage_metrics_json", stageMetricsJson);
+
+    queryMetric.put("total_batch_scan_time_ms", total_batch_scan_time_ms);
   }
 
   private List<Row> createRowsFromBuffer() {
@@ -370,7 +411,10 @@ public class IcebergBenchmark implements Runnable {
                   map.get("analytics_core_enabled"),
                   map.get("client_type"),
                   map.get("total_batch_scan_time_ms"),
-                  map.get("timestamp"));
+                  map.get("timestamp"),
+                  map.get("task_metrics_json"),
+                  map.get("stage_metrics_json")
+                  );
             })
         .collect(Collectors.toList());
   }
@@ -401,4 +445,99 @@ public class IcebergBenchmark implements Runnable {
     System.out.println("  -> Flushed " + resultsBuffer.size() + " results to " + finalOutputPath);
     resultsBuffer.clear();
   }
+
+  private void processTaskMetricsFromDeque() {
+    Deque<SparkListenerTaskEnd> taskEndDeque = CustomMetricListener.getTaskEndDeque();
+    System.out.println("Processing " + taskEndDeque.size() + " task metrics...");
+
+    while (!taskEndDeque.isEmpty()) {
+      SparkListenerTaskEnd taskEnd = taskEndDeque.poll();
+      int stageId = taskEnd.stageId();
+      Long executionId = listener.getStageToExecutionId().get(stageId);
+      if (executionId == null) {
+        continue;
+      }
+
+      Optional<Map<String, Object>> matchingResultOpt =
+          resultsBuffer.stream()
+              .filter(
+                  result -> {
+                    long queryExecutionId = ((Long) result.get("execution_id")).longValue();
+                    return queryExecutionId == executionId;
+                  })
+              .findFirst();
+      matchingResultOpt.ifPresentOrElse(
+          matchingResult -> {
+            @SuppressWarnings("unchecked")
+            List<SparkListenerTaskEnd> tasks =
+                (List<SparkListenerTaskEnd>)
+                    matchingResult.computeIfAbsent("tasks", k -> new ArrayList<>());
+            tasks.add(taskEnd);
+          },
+          () -> {
+            System.out.println(
+                "  -> Warning: Task from Stage ID "
+                    + stageId
+                    + " (execution_id "
+                    + executionId
+                    + ") not found in any query result buffer..");
+          });
+    }
+
+    for (Map<String, Object> result : resultsBuffer) {
+      updateQueryMetricFromTaskMetrics(result);
+    }
+  }
+
+  void updateQueryMetricFromTaskMetrics(Map<String, Object> queryMetric) {
+    if (!queryMetric.containsKey("tasks")) {
+      queryMetric.put("task_metrics_json", "[]");
+      return;
+    }
+    @SuppressWarnings("unchecked")
+    List<SparkListenerTaskEnd> tasks = (List<SparkListenerTaskEnd>) queryMetric.get("tasks");
+    if (tasks.isEmpty()) {
+      queryMetric.put("task_metrics_json", "[]");
+      return;
+    }
+    List<Map<String, Object>> taskMaps = new ArrayList<>();
+    for (SparkListenerTaskEnd taskEnd : tasks) {
+      TaskInfo info = taskEnd.taskInfo();
+      if (info == null) {
+        continue;
+      }
+
+      // If a task has scantime it means, it is reading data from file system.
+      boolean doesTaskContributeToScanTime = false;
+      for (AccumulableInfo acc : CollectionConverters.asJava(info.accumulables())) {
+        if (acc.name().isDefined() && acc.name().get().equals("custom_scan_time")) {
+          doesTaskContributeToScanTime = true;
+        }
+      }
+
+      Map<String, Object> taskMap = new HashMap<>();
+      taskMap.put("stage_id", taskEnd.stageId());
+      taskMap.put("task_id", info.taskId());
+      taskMap.put("task_type", taskEnd.taskType());
+      taskMap.put("launch_time", info.launchTime());
+      taskMap.put("finish_time", info.finishTime());
+      taskMap.put("duration_ms", info.duration());
+      taskMap.put("host", info.host());
+      taskMap.put("status", info.status());
+      taskMap.put("failed", info.failed());
+      taskMap.put("doesTaskContributeToScanTime", doesTaskContributeToScanTime);
+
+      taskMaps.add(taskMap);
+    }
+
+    String json = "[]";
+    try {
+      json = mapper.writeValueAsString(taskMaps);
+    } catch (Exception e) {
+      System.err.println("Error serializing task metrics to JSON: " + e.getMessage());
+    }
+    queryMetric.put("task_metrics_json", json);
+  }
+
+
 }
